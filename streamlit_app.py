@@ -1,151 +1,105 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# --------------------------------------------------------------------------
+# 1. API 설정 및 데이터 로드 함수
+# --------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+API_KEY = "0b594b395a0248a3a0a68f3b79483427"
+API_URL = f"https://www.career.go.kr/cnet/openapi/getOpenApi?apiKey={API_KEY}&svcType=api&svcCode=SCHOOL&contentType=xml&gubun=high_list&perPage=1000"
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+@st.cache_data(ttl=3600)
+def load_school_data():
+    try:
+        response = requests.get(API_URL)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        school_list = []
+        for content in root.findall('.//content'):
+            school_info = {
+                'schoolName': content.findtext('schoolName'),
+                'region': content.findtext('region'),
+                'totalCount': content.findtext('totalCount'),
+                'major': content.findtext('major'),
+                'subject': content.findtext('subject'),
+                'chart': content.findtext('chart'),
+                'cert': content.findtext('cert')
+            }
+            school_list.append(school_info)
+        return school_list
+    except requests.exceptions.RequestException as e:
+        st.error(f"API 요청 중 오류가 발생했습니다: {e}")
+        return None
+    except ET.ParseError as e:
+        st.error(f"XML 데이터를 파싱하는 중 오류가 발생했습니다: {e}")
+        return None
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# --------------------------------------------------------------------------
+# 2. Streamlit 앱 UI 구성
+# --------------------------------------------------------------------------
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+st.set_page_config(page_title="전국 특성화고 학과 검색", page_icon="🏫", layout="wide")
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+if 'search_history' not in st.session_state:
+    st.session_state.search_history = []
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+st.title("🏫 전국 특성화/특수목적 고등학교 학과 검색")
+st.info("커리어넷 API를 활용하여 전국의 특성화고 및 특목고 학과 정보를 검색합니다.", icon="💡")
+
+school_data = load_school_data()
+
+# ==============================================================================
+# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼ 진단 코드 추가 부분 ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+# ==============================================================================
+if school_data:
+    st.subheader("🔍 데이터 로딩 상태 확인 (디버깅용)")
+    st.success(f"✅ 총 {len(school_data)}개의 학교 데이터를 성공적으로 불러왔습니다.")
+    # 받아온 데이터 중 첫 5개를 샘플로 화면에 출력해봅니다.
+    st.write("데이터 샘플 (처음 5개):", school_data[:5])
+    st.divider()
+# ==============================================================================
+# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲ 진단 코드 추가 부분 ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+# ==============================================================================
+
+if school_data:
+    search_query = st.text_input(
+        label="궁금한 학과 키워드를 입력하세요 (예: 디자인, 프로그래밍, 조리)",
+        placeholder="검색어를 입력하고 Enter를 누르세요."
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    if search_query:
+        if search_query not in st.session_state.search_history:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.search_history.insert(0, f"[{now}] {search_query}")
 
-    return gdp_df
+        # 'major' 필드가 None인 경우를 방지하기 위해 먼저 확인합니다.
+        results = [school for school in school_data if school['major'] and search_query.lower() in school['major'].lower()]
 
-gdp_df = get_gdp_data()
+        st.divider()
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+        if results:
+            st.success(f"'{search_query}'에 대한 검색 결과: 총 {len(results)}건")
+            for idx, item in enumerate(results):
+                with st.expander(f"**{item['schoolName']}** - {item['major']}"):
+                    st.markdown(f"**🏫 학교명:** {item['schoolName']} ({item['region']})")
+                    st.markdown(f"**📚 학과명:** {item['major']}")
+                    st.markdown(f"**📖 배우는 내용:** {item['subject']}")
+                    st.markdown(f"**🎓 졸업 후 진로:** {item['chart']}")
+                    st.markdown(f"**📜 취득 가능 자격증:** {item['cert']}")
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            st.warning(f"'{search_query}'에 대한 검색 결과가 없습니다. 다른 키워드로 검색해보세요.")
+else:
+    st.error("데이터를 불러오는데 실패했습니다. 잠시 후 다시 시도해주세요.")
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+with st.sidebar:
+    st.header("🔍 검색 기록")
+    if st.session_state.search_history:
+        for record in st.session_state.search_history:
+            st.text(record)
+    else:
+        st.info("아직 검색 기록이 없습니다.")
+    st.divider()
+    st.caption("Powered by Streamlit & CareerNet API")
+    
