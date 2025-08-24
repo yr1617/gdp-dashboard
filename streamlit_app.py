@@ -2,70 +2,64 @@ import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
-import time # 재시도 사이의 대기 시간을 위해 time 라이브러리 추가
+import time
 
 # --------------------------------------------------------------------------
-# 1. API 설정 및 데이터 로드 함수 (재시도 및 지연 기능 추가)
+# 1. API 설정 및 데이터 로드 함수 (중복 데이터 감지 기능 추가)
 # --------------------------------------------------------------------------
 
 API_KEY = "0b594b395a0248a3a0a68f3b79483427"
 BASE_URL = f"https://www.career.go.kr/cnet/openapi/getOpenApi?apiKey={API_KEY}&svcType=api&svcCode=SCHOOL&contentType=xml&gubun=high_list"
 
-@st.cache_data(ttl=3600) # 1시간 동안 전체 결과를 캐싱
-def load_all_school_data_final():
+@st.cache_data(ttl=3600)
+def load_all_school_data_definitive():
     """
-    재시도(Retry) 로직과 지연(Delay)을 추가하여 서버 오류에 더욱 강력하게 대처하는 최종 함수
+    중복 데이터 감지 로직을 추가하여 무한 루프를 방지하는 가장 안정적인 최종 함수
     """
     all_schools = []
     page = 1
     per_page = 100
-    
-    # --- 재시도 설정 ---
-    MAX_RETRIES = 3 # 최대 3번까지 재시도
-    RETRY_DELAY = 1 # 재시도 사이에 1초 대기
+    previous_page_content = None # 이전 페이지 내용과 비교하기 위한 변수
 
-    with st.spinner('전체 학교 데이터를 불러오는 중입니다... (서버 오류 시 자동 재시도)'):
+    with st.spinner('전체 학교 데이터를 불러오는 중입니다... (무한 루프 방지 기능 작동 중)'):
         while True:
-            is_successful = False # 현재 페이지 요청 성공 여부
-            
-            for attempt in range(MAX_RETRIES):
-                try:
-                    # 각 요청 사이에 짧은 지연시간을 두어 서버 부담 감소
-                    time.sleep(0.1) 
-                    
-                    response = requests.get(f"{BASE_URL}&perPage={per_page}&page={page}")
-                    response.raise_for_status() # 오류 발생 시 여기서 예외를 일으킴
-                    
-                    root = ET.fromstring(response.content)
-                    contents = root.findall('.//content')
-                    
-                    is_successful = True # 성공했으므로 표시
-                    break # 재시도 루프 탈출
+            try:
+                time.sleep(0.05) # 서버에 부담을 주지 않기 위한 최소한의 지연
+                response = requests.get(f"{BASE_URL}&perPage={per_page}&page={page}")
+                response.raise_for_status()
                 
-                except requests.exceptions.RequestException as e:
-                    # 재시도 전 대기
-                    st.warning(f"페이지 {page} 로딩 실패 (시도 {attempt + 1}/{MAX_RETRIES})... {RETRY_DELAY}초 후 재시도합니다. 오류: {e}")
-                    time.sleep(RETRY_DELAY)
-            
-            # 최대 재시도 후에도 실패했다면 전체 프로세스 중단
-            if not is_successful:
-                st.error(f"페이지 {page}의 데이터를 가져오는 데 최종적으로 실패했습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해주세요.")
+                # 현재 페이지의 원본 XML 텍스트를 저장
+                current_page_content = response.content
+                
+                # [핵심 로직] 현재 페이지 내용이 이전 페이지와 동일하면, 중복이므로 중단
+                if current_page_content == previous_page_content:
+                    break
+                
+                root = ET.fromstring(current_page_content)
+                contents = root.findall('.//content')
+
+                if not contents:
+                    break
+                
+                for content in contents:
+                    school_info = {
+                        'schoolName': content.findtext('schoolName'), 'region': content.findtext('region'),
+                        'totalCount': content.findtext('totalCount'), 'major': content.findtext('major'),
+                        'subject': content.findtext('subject'), 'chart': content.findtext('chart'),
+                        'cert': content.findtext('cert')
+                    }
+                    all_schools.append(school_info)
+                
+                # 다음 루프를 위해 현재 페이지 내용을 previous_page_content에 저장
+                previous_page_content = current_page_content
+                page += 1
+
+            except requests.exceptions.RequestException as e:
+                st.error(f"API 요청 중 오류가 발생했습니다: {e}")
                 return None
-
-            # 만약 content가 하나도 없다면, 마지막 페이지이므로 전체 루프 중단
-            if not contents:
-                break
-
-            for content in contents:
-                school_info = {
-                    'schoolName': content.findtext('schoolName'), 'region': content.findtext('region'),
-                    'totalCount': content.findtext('totalCount'), 'major': content.findtext('major'),
-                    'subject': content.findtext('subject'), 'chart': content.findtext('chart'),
-                    'cert': content.findtext('cert')
-                }
-                all_schools.append(school_info)
-            
-            page += 1
+            except ET.ParseError as e:
+                st.error(f"XML 데이터를 파싱하는 중 오류가 발생했습니다: {e}")
+                return None
     
     return all_schools
 
@@ -80,7 +74,7 @@ if 'search_history' not in st.session_state:
 
 st.title("🏫 전국 특성화/특수목적 고등학교 학과 검색")
 
-school_data = load_all_school_data_final()
+school_data = load_all_school_data_definitive()
 
 if school_data is not None:
     st.success(f"✅ 총 {len(school_data)}개의 학교 데이터를 성공적으로 불러왔습니다.")
